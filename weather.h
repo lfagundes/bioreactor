@@ -1,0 +1,2 @@
+void waitForDay();
+bool isNight();

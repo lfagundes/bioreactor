@@ -15,31 +15,16 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ *
  */
 
-const int valvePins[] = {2, 3, 4, 5, 6, 7, 8, 9};
-const int numValves = sizeof(valvePins) / sizeof(valvePins[0]);
-
-const int waterInputPin = 10;
-const int waterLevelSensorPin = A0;
-const int circulationValvePin = A1;
-const int airPumpPin = A2;
-const int waterPumpPin = A3;
-
-const int cleaningDuration = 10;
-
-// Valve bitwise definitions
-const int valveA = 1 << 0;  // 00000001
-const int valveB = 1 << 1;  // 00000010
-const int valveC = 1 << 2;  // 00000100
-const int valveD = 1 << 3;  // 00001000
-const int valveE = 1 << 4;  // 00010000
-const int valveF = 1 << 5;  // 00100000
-const int valveG = 1 << 6;  // 01000000
-const int valveH = 1 << 7;  // 10000000
+#include "log.h"
+#include "wiring.h"
+#include "weather.h"
 
 void setup() {
   Serial.begin(9600);
+  resetClock();
   delay(1000);
   // Initialize all valve pins as OUTPUTs
   for (int i = 0; i < numValves; i++) {
@@ -47,8 +32,11 @@ void setup() {
     // Ensure all irrigation outputs start OFF
     digitalWrite(valvePins[i], LOW);
   }
-  pinMode(waterInputPin, OUTPUT);
-  digitalWrite(waterInputPin, LOW);
+  pinMode(waterLevelSensorPin, INPUT_PULLUP);
+  pinMode(lightSensorPin, INPUT);
+
+  pinMode(waterInputValvePin, OUTPUT);
+  digitalWrite(waterInputValvePin, LOW);
 
   pinMode(circulationValvePin, OUTPUT);
   digitalWrite(circulationValvePin, LOW);
@@ -58,16 +46,18 @@ void setup() {
 
   pinMode(airPumpPin, OUTPUT);
   digitalWrite(airPumpPin, LOW);
+
+  logMessage("Bioreactor initialized");
 }
 
 void pumpOn() {
   digitalWrite(waterPumpPin, HIGH);
-  Serial.println("Water pump ON");
+  logMessage("Water pump ON");
 }
 
 void pumpOff() {
   digitalWrite(waterPumpPin, LOW);
-  Serial.println("Water pump OFF");
+  logMessage("Water pump OFF");
 }
 
 void openCirculation() {
@@ -80,40 +70,86 @@ void closeCirculation() {
   digitalWrite(circulationValvePin, LOW);
 }
 
-void openValves(int valveCombination) {
-  setValves(valveCombination, HIGH);
-}
-
-void closeValves(int valveCombination) {
-  setValves(valveCombination, LOW);
-}
-
-void irrigate(int valveCombination, int duration) {
-  // First dump bottom sediments to upper container to avoid clogging
-  openCirculation();
-  pumpOn();
-  delay(cleaningDuration * 1000);
-  // Now open valves and close circulation to pressurize irrigation channels
-  openValves(valveCombination);
-  closeCirculation();
-  // Irrigate for desired duration
-  delay(duration * 1000);
-  // Stop pump and wait before closing valves, to avoid pressure on hoses
-  pumpOff();
+void open(int valves) {
+  setValves(valves, HIGH);
   delay(500);
-  closeValves(valveCombination);
 }
 
-void setValves(int valveCombination, int state) {
+void close(int valves) {
+  delay(500);
+  setValves(valves, LOW);
+}
+
+void setValves(int valves, int state) {
   for (int i = 0; i < numValves; i++) {
-    if (valveCombination & (1 << i)) {
+    if (valves & (1 << i)) {
       digitalWrite(valvePins[i], state);
-      Serial.print("Valve ");
-      Serial.print(i);
-      Serial.println(state == HIGH ? " opened" : " closed");
+      String message = "Valve " + String(i) + (state == HIGH ?
+                                               " opened" : " closed");
+      logMessage(message.c_str());
     }
   }
 }
 
+bool waterAboveThreshold() {
+  bool connected = digitalRead(waterLevelSensorPin) == LOW; // LOW means connected
+  if (connected) {
+    logMessage("Water level is low, needs water");
+  } else {
+    logMessage("Water level is OK");
+  }
+  return !connected;
+}
+
+void inputWater(int t) {
+  for (int i=0; i < t; i++) {
+    if (waterAboveThreshold()) {
+      digitalWrite(waterInputValvePin, LOW);
+      return;
+    }
+    digitalWrite(waterInputValvePin, HIGH);
+    delay(1000);
+  }
+  digitalWrite(waterInputValvePin, LOW);
+}
+
+void cleanUp() {
+  openCirculation();
+  pumpOn();
+  delay(5000);
+  pumpOff();
+  closeCirculation();
+}
+
 void loop() {
+  while (true) {
+    waitForDay();
+    resetClock();
+    inputWater(120);
+    while (!isNight()) {
+      // Cleanup
+      openCirculation();
+      pumpOn();
+      delay(5000);
+      // Collect nutrients for 10s
+      open(valveH);
+      delay(10000);
+      // Irrigate cannabis for 1 minute
+      open(valveG);
+      close(valveH);
+      delay(60000);
+      pumpOff();
+      close(valveG);
+      // Now irrigate nutrients every 10 minutes for 4 hours
+      for (int i=0; i<24; i++) {
+        delay(600000);
+        open(valveH);
+        pumpOn();
+        delay(10000);
+        pumpOff();
+        close(valveH);
+        inputWater(30);
+      }
+    }
+  }
 }
